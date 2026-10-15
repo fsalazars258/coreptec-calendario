@@ -186,6 +186,7 @@
     .card-copy{max-height:none;-webkit-line-clamp:unset;}
   }
 </style>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
 
@@ -199,7 +200,9 @@
   </div>
   <div class="header-actions">
     <button class="btn-secondary" id="btnExportPdf">⭳ Descargar PDF</button>
-    <button class="btn-primary" id="btnNew">+ Nueva publicación</button>
+    <button class="btn-secondary" id="btnLogin">Iniciar sesión</button>
+    <button class="btn-ghost" id="btnLogout" style="display:none;">Cerrar sesión</button>
+    <button class="btn-primary" id="btnNew" style="display:none;">+ Nueva publicación</button>
   </div>
 </header>
 
@@ -238,7 +241,7 @@
     <div class="eyebrow">Sin publicaciones</div>
     <h3>Aún no hay contenido cargado</h3>
     <p>Crea tu primera publicación: sube las imágenes (o el carrusel completo), escribe el copy y define en qué red va y en qué estado está.</p>
-    <button class="btn-primary" id="btnNewEmpty">+ Nueva publicación</button>
+    <button class="btn-primary" id="btnNewEmpty" style="display:none;">+ Nueva publicación</button>
   </div>
 </main>
 
@@ -309,6 +312,17 @@
   </div>
 </div>
 
+<div class="overlay" id="loginOverlay">
+  <div class="modal" style="max-width:440px;">
+    <div class="modal-header"><h2>Acceso de edición</h2><button class="modal-close" id="btnLoginClose">✕</button></div>
+    <div class="modal-body">
+      <p style="margin:0;color:var(--gris-oscuro);font-size:13px;line-height:1.5;">Solo la cuenta autorizada de Coreptec puede modificar las publicaciones.</p>
+      <div class="field"><label for="loginEmail">Correo corporativo</label><input type="text" id="loginEmail" autocomplete="username" value="josue.munoz@coreptec.com"></div>
+      <div class="field"><label for="loginPassword">Contraseña</label><input type="password" id="loginPassword" autocomplete="current-password" style="width:100%;border:1.5px solid var(--linea);border-radius:10px;padding:11px 13px;font-size:14px;"></div>
+    </div>
+    <div class="modal-footer"><button class="btn-ghost" id="btnLoginCancel">Cancelar</button><button class="btn-primary" id="btnLoginSubmit">Iniciar sesión</button></div>
+  </div>
+</div>
 <div class="toast" id="toast"></div>
 
 <script>
@@ -317,31 +331,91 @@ document.getElementById('logoImg').src = LOGO_B64;
 document.getElementById('logoImgPrint').src = LOGO_B64;
 document.getElementById('printDate').textContent = new Date().toLocaleDateString('es-PE',{year:'numeric',month:'long',day:'numeric'});
 
+const SUPABASE_URL = 'https://rzldclkpzkzubaqehmzp.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_eCzGFEb7wbw_LKsx9hI9EA_zLuuS8QV';
+const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const EDITOR_EMAIL = 'josue.munoz@coreptec.com';
+const TABLE = 'calendario_publicaciones';
+const BUCKET = 'calendario-imagenes';
 let entries = [];
 let editingId = null;
 let modalImages = [];
 let dotIndex = {};
+let currentUser = null;
 
 const $ = (id) => document.getElementById(id);
-const STORAGE_KEY = 'coreptec-calendario-entries';
 
-function uid(){ return 'e_' + Date.now() + '_' + Math.random().toString(36).slice(2,8); }
+function uid(){ return crypto.randomUUID ? crypto.randomUUID() : ('e_' + Date.now() + '_' + Math.random().toString(36).slice(2,8)); }
+function isEditor(){ return !!currentUser && currentUser.email && currentUser.email.toLowerCase() === EDITOR_EMAIL; }
+function updateAccessUI(){
+  const editor = isEditor();
+  $('btnNew').style.display = editor ? 'inline-block' : 'none';
+  $('btnLogin').style.display = currentUser ? 'none' : 'inline-block';
+  $('btnLogout').style.display = currentUser ? 'inline-block' : 'none';
+  document.querySelectorAll('.card-footer').forEach(el => el.style.display = editor ? 'flex' : 'none');
+  if(!editor && $('overlay').classList.contains('open')) closeModal();
+}
 
 async function loadEntries(){
   try{
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if(raw){ entries = JSON.parse(raw); }
-  }catch(e){ entries = []; }
-  render();
+    const { data, error } = await supabase.from(TABLE).select('*').order('creado_en', { ascending: true });
+    if(error) throw error;
+    entries = (data || []).map(row => ({
+      id: row.id,
+      section: row.titulo || '',
+      copy: row.contenido || '',
+      social: row.red_social || '',
+      marketing: row.marketing || 'No creado',
+      publicacion: row.estado || 'Sin aprobar',
+      images: Array.isArray(row.imagenes) ? row.imagenes.map(img => typeof img === 'string' ? img : (img.url || img.path || '')).filter(Boolean) : [],
+      createdAt: row.creado_en ? new Date(row.creado_en).getTime() : Date.now()
+    }));
+    render();
+  }catch(e){
+    console.error('Error cargando publicaciones:', e);
+    showToast('No se pudo cargar el calendario. Revisa la conexión y las políticas de Supabase.');
+  }
 }
 
-async function persist(){
-  try{
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(entries));
-  }catch(e){
-    console.error('No se pudo guardar', e);
-    showToast('No se pudo guardar: revisa que las imágenes no sean demasiado pesadas');
+async function uploadImages(images){
+  const urls = [];
+  for(const item of images){
+    if(typeof item === 'string' && /^https?:\/\//i.test(item)) { urls.push(item); continue; }
+    if(typeof item !== 'string' || !item.startsWith('data:')) continue;
+    const parts = item.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.*)$/);
+    if(!parts) throw new Error('Una imagen tiene un formato no válido.');
+    const mime = parts[1];
+    const ext = (mime.split('/')[1] || 'png').replace('jpeg','jpg').replace(/[^a-z0-9]/gi,'');
+    const blob = await (await fetch(item)).blob();
+    const path = `${Date.now()}-${uid()}.${ext}`;
+    const { error } = await supabase.storage.from(BUCKET).upload(path, blob, { contentType:mime, upsert:false });
+    if(error) throw error;
+    const { data } = supabase.storage.from(BUCKET).getPublicUrl(path);
+    urls.push(data.publicUrl);
   }
+  return urls;
+}
+
+async function persist(entry){
+  if(!isEditor()) throw new Error('Solo Josué puede modificar el calendario.');
+  const images = await uploadImages(entry.images || []);
+  const payload = {
+    titulo: entry.section,
+    contenido: entry.copy || '',
+    red_social: entry.social || null,
+    marketing: entry.marketing || 'No creado',
+    estado: entry.publicacion || 'Sin aprobar',
+    imagenes: images,
+    actualizado_en: new Date().toISOString()
+  };
+  let result;
+  if(entry.id && entries.some(e => e.id === entry.id)) {
+    result = await supabase.from(TABLE).update(payload).eq('id', entry.id).select().single();
+  } else {
+    result = await supabase.from(TABLE).insert(payload).select().single();
+  }
+  if(result.error) throw result.error;
+  await loadEntries();
 }
 
 function showToast(msg){
@@ -413,7 +487,7 @@ function cardHtml(entry){
       <div class="badges">${badgeHtml(entry)}</div>
     </div>
     <div class="card-footer">
-      <button class="btn-ghost" onclick="openModal('${entry.id}')">Editar</button>
+      ${isEditor() ? `<button class="btn-ghost" onclick="openModal('${entry.id}')">Editar</button>` : ``}
     </div>
   </div>`;
 }
@@ -429,6 +503,8 @@ function currentFilters(){
 }
 
 function render(){
+  updateAccessUI();
+  $('btnNewEmpty').style.display = isEditor() ? 'inline-block' : 'none';
   const f = currentFilters();
   const filtered = entries.filter(e =>
     (!f.social || e.social === f.social) &&
@@ -464,6 +540,7 @@ function resetModal(){
 }
 
 function openModal(id){
+  if(!isEditor()){ showToast('Inicia sesión con la cuenta autorizada para editar.'); return; }
   resetModal();
   if(id){
     const entry = entries.find(e=>e.id===id);
@@ -519,39 +596,73 @@ $('btnCancel').addEventListener('click', closeModal);
 $('overlay').addEventListener('click', (e)=>{ if(e.target.id==='overlay') closeModal(); });
 
 $('btnSave').addEventListener('click', async ()=>{
+  if(!isEditor()){ showToast('No tienes permisos para editar.'); return; }
   const section = $('fSection').value.trim();
   if(!section){ showToast('Ponle un título o sección a la publicación'); $('fSection').focus(); return; }
   const social = (document.querySelector('input[name=social]:checked')||{}).value || '';
   const marketing = (document.querySelector('input[name=marketing]:checked')||{}).value || 'No creado';
   const publicacion = (document.querySelector('input[name=publicacion]:checked')||{}).value || 'Sin aprobar';
   const copy = $('fCopy').value;
-
-  if(editingId){
-    const entry = entries.find(e=>e.id===editingId);
-    Object.assign(entry, { section, social, marketing, publicacion, copy, images: modalImages.slice() });
-  } else {
-    entries.push({ id: uid(), section, social, marketing, publicacion, copy, images: modalImages.slice(), createdAt: Date.now() });
+  const entry = { id: editingId, section, social, marketing, publicacion, copy, images: modalImages.slice(), createdAt: Date.now() };
+  $('btnSave').disabled = true;
+  $('btnSave').textContent = 'Guardando…';
+  try{
+    await persist(entry);
+    closeModal();
+    showToast('Publicación guardada y compartida');
+  }catch(e){
+    console.error(e);
+    showToast('No se pudo guardar: ' + (e.message || 'revisa permisos y conexión'));
+  }finally{
+    $('btnSave').disabled = false;
+    $('btnSave').textContent = 'Guardar publicación';
   }
-  await persist();
-  closeModal();
-  render();
-  showToast('Publicación guardada');
 });
 
 $('btnDelete').addEventListener('click', async ()=>{
-  if(!editingId) return;
-  entries = entries.filter(e=>e.id!==editingId);
-  await persist();
-  closeModal();
-  render();
-  showToast('Publicación eliminada');
+  if(!editingId || !isEditor()) return;
+  if(!confirm('¿Eliminar esta publicación para todos los usuarios?')) return;
+  try{
+    const { error } = await supabase.from(TABLE).delete().eq('id', editingId);
+    if(error) throw error;
+    entries = entries.filter(e=>e.id!==editingId);
+    closeModal(); render(); showToast('Publicación eliminada');
+  }catch(e){ console.error(e); showToast('No se pudo eliminar: revisa permisos.'); }
+});
+
+$('btnLogin').addEventListener('click', ()=> $('loginOverlay').classList.add('open'));
+$('btnLoginClose').addEventListener('click', ()=> $('loginOverlay').classList.remove('open'));
+$('btnLoginCancel').addEventListener('click', ()=> $('loginOverlay').classList.remove('open'));
+$('loginOverlay').addEventListener('click', e=>{ if(e.target.id==='loginOverlay') $('loginOverlay').classList.remove('open'); });
+$('btnLoginSubmit').addEventListener('click', async ()=>{
+  const email = $('loginEmail').value.trim().toLowerCase();
+  const password = $('loginPassword').value;
+  if(email !== EDITOR_EMAIL){ showToast('Esta cuenta no está autorizada para editar.'); return; }
+  if(!password){ showToast('Ingresa tu contraseña.'); return; }
+  $('btnLoginSubmit').disabled = true;
+  try{
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+    if(error) throw error;
+    currentUser = data.user;
+    $('loginPassword').value = '';
+    $('loginOverlay').classList.remove('open');
+    updateAccessUI(); render(); showToast('Sesión iniciada');
+  }catch(e){ console.error(e); showToast('No se pudo iniciar sesión. Verifica la contraseña o usa el enlace mágico.'); }
+  finally{ $('btnLoginSubmit').disabled = false; }
+});
+$('btnLogout').addEventListener('click', async ()=>{
+  await supabase.auth.signOut(); currentUser = null; updateAccessUI(); render(); showToast('Sesión cerrada');
+});
+supabase.auth.onAuthStateChange((_event, session)=>{
+  currentUser = session?.user || null;
+  updateAccessUI();
 });
 
 ['fSocial','fMarketing','fPublicacion'].forEach(id=> $(id).addEventListener('change', render));
 
 $('btnExportPdf').addEventListener('click', ()=>{ window.print(); });
 
-loadEntries();
+supabase.auth.getSession().then(({data})=>{ currentUser = data.session?.user || null; updateAccessUI(); loadEntries(); });
 </script>
 </body>
 </html>
