@@ -333,7 +333,7 @@ document.getElementById('printDate').textContent = new Date().toLocaleDateString
 
 const SUPABASE_URL = 'https://rzldclkpzkzubaqehmzp.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_eCzGFEb7wbw_LKsx9hI9EA_zLuuS8QV';
-const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const EDITOR_EMAIL = 'josue.munoz@coreptec.com';
 const TABLE = 'calendario_publicaciones';
 const BUCKET = 'calendario-imagenes';
@@ -358,7 +358,7 @@ function updateAccessUI(){
 
 async function loadEntries(){
   try{
-    const { data, error } = await supabase.from(TABLE).select('*').order('creado_en', { ascending: true });
+    const { data, error } = await supabaseClient.from(TABLE).select('*').order('creado_en', { ascending: true });
     if(error) throw error;
     entries = (data || []).map(row => ({
       id: row.id,
@@ -388,9 +388,9 @@ async function uploadImages(images){
     const ext = (mime.split('/')[1] || 'png').replace('jpeg','jpg').replace(/[^a-z0-9]/gi,'');
     const blob = await (await fetch(item)).blob();
     const path = `${Date.now()}-${uid()}.${ext}`;
-    const { error } = await supabase.storage.from(BUCKET).upload(path, blob, { contentType:mime, upsert:false });
+    const { error } = await supabaseClient.storage.from(BUCKET).upload(path, blob, { contentType:mime, upsert:false });
     if(error) throw error;
-    const { data } = supabase.storage.from(BUCKET).getPublicUrl(path);
+    const { data } = supabaseClient.storage.from(BUCKET).getPublicUrl(path);
     urls.push(data.publicUrl);
   }
   return urls;
@@ -410,9 +410,9 @@ async function persist(entry){
   };
   let result;
   if(entry.id && entries.some(e => e.id === entry.id)) {
-    result = await supabase.from(TABLE).update(payload).eq('id', entry.id).select().single();
+    result = await supabaseClient.from(TABLE).update(payload).eq('id', entry.id).select().single();
   } else {
-    result = await supabase.from(TABLE).insert(payload).select().single();
+    result = await supabaseClient.from(TABLE).insert(payload).select().single();
   }
   if(result.error) throw result.error;
   await loadEntries();
@@ -623,7 +623,7 @@ $('btnDelete').addEventListener('click', async ()=>{
   if(!editingId || !isEditor()) return;
   if(!confirm('¿Eliminar esta publicación para todos los usuarios?')) return;
   try{
-    const { error } = await supabase.from(TABLE).delete().eq('id', editingId);
+    const { error } = await supabaseClient.from(TABLE).delete().eq('id', editingId);
     if(error) throw error;
     entries = entries.filter(e=>e.id!==editingId);
     closeModal(); render(); showToast('Publicación eliminada');
@@ -641,7 +641,7 @@ $('btnLoginSubmit').addEventListener('click', async ()=>{
   if(!password){ showToast('Ingresa tu contraseña.'); return; }
   $('btnLoginSubmit').disabled = true;
   try{
-    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+    const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
     if(error) throw error;
     currentUser = data.user;
     $('loginPassword').value = '';
@@ -651,9 +651,9 @@ $('btnLoginSubmit').addEventListener('click', async ()=>{
   finally{ $('btnLoginSubmit').disabled = false; }
 });
 $('btnLogout').addEventListener('click', async ()=>{
-  await supabase.auth.signOut(); currentUser = null; updateAccessUI(); render(); showToast('Sesión cerrada');
+  await supabaseClient.auth.signOut(); currentUser = null; updateAccessUI(); render(); showToast('Sesión cerrada');
 });
-supabase.auth.onAuthStateChange((_event, session)=>{
+supabaseClient.auth.onAuthStateChange((_event, session)=>{
   currentUser = session?.user || null;
   updateAccessUI();
 });
@@ -662,7 +662,7 @@ supabase.auth.onAuthStateChange((_event, session)=>{
 
 $('btnExportPdf').addEventListener('click', ()=>{ window.print(); });
 
-supabase.auth.getSession().then(({data})=>{ currentUser = data.session?.user || null; updateAccessUI(); loadEntries(); });
+supabaseClient.auth.getSession().then(({data})=>{ currentUser = data.session?.user || null; updateAccessUI(); loadEntries(); });
 </script>
 </body>
 </html>
