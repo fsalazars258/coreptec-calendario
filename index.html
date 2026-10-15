@@ -462,6 +462,7 @@ function mediaHtml(entry){
   return `<img src="${img}" alt="${entry.section}">${carousel}`;
 }
 
+  
 function shiftImage(id, dir, ev){
   ev.stopPropagation();
   const entry = entries.find(e=>e.id===id);
@@ -661,6 +662,7 @@ supabaseClient.auth.onAuthStateChange((_event, session)=>{
 ['fSocial','fMarketing','fPublicacion'].forEach(id=> $(id).addEventListener('change', render));
 
 $('btnExportPdf').addEventListener('click', ()=>{ window.print(); });
+  
 
 supabaseClient.auth.getSession().then(({data})=>{ currentUser = data.session?.user || null; updateAccessUI(); loadEntries(); });
 </script>
